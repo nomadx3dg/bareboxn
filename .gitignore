@@ -1,0 +1,11 @@
+build/
+build-*/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.bin
+*.pyc
+__pycache__/
+.cache/
+compile_commands.json
