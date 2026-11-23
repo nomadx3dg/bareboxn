@@ -52,7 +52,8 @@ inline void run_vector(const Vec& v) {
     *p = iv.value;
   }
   const bbn::StopReason r = m.cpu().run(v.max_insns);
-  const bbn::StopReason want = std::strcmp(v.stop, "Unsupported") == 0 ? bbn::StopReason::Unsupported : bbn::StopReason::Halt;
+  const bbn::StopReason want = std::strcmp(v.stop, "Unsupported") == 0 ? bbn::StopReason::Unsupported
+                               : std::strcmp(v.stop, "PowerOff") == 0 ? bbn::StopReason::PowerOff : bbn::StopReason::Halt;
   if (r != want) {
     std::fprintf(stderr, "  [%s] stop reason %d, wanted %d (pc=0x%llx %s)\n", v.name, (int)r, (int)want,
                  (unsigned long long)s.pc, m.cpu().stop_message().c_str());

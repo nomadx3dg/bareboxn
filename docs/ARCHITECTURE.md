@@ -14,11 +14,12 @@ listed explicitly in [CPU_STATUS.md](CPU_STATUS.md) and in "Known gaps" below.
 | :-- | :-- |
 | `src/core/` | Bit helpers shared by everything. |
 | `src/memory/` | `Bus`: guest-physical address space, lazily committed RAM, MMIO dispatch. |
-| `src/cpu/` | AArch64 interpreter: state, decode/execute, exceptions, system registers. |
+| `src/cpu/` | AArch64 interpreter: state, decode/execute, exceptions, system registers, stage-1 MMU + soft TLB (`mmu.cpp`). |
 | `src/devices/` | Device models (PL011 UART so far). Depend only on `memory/`. |
-| `src/machine/` | `VirtMachine` (`bbn-virt`): wires CPU, bus and devices together. |
+| `src/machine/` | `VirtMachine` (`bbn-virt`): wires CPU, bus, devices and PSCI together. |
 | `tools/bbn-run.cpp` | Run a flat binary on `bbn-virt`. |
-| `tools/difftest/` | Differential fuzzer against Unicorn (QEMU TCG). |
+| `tools/difftest/` | Single-instruction differential fuzzer against Unicorn (QEMU TCG). |
+| `tools/mmu/` | Page-table/program generator, MMU differential fuzzer against QEMU system emulation, golden replay. |
 | `tests/` | Unit tests, generated instruction vectors, end-to-end program tests. |
 
 Dependency rule (from the report, kept): the CPU core and devices build and test with no
@@ -77,6 +78,23 @@ low-memory-killer behaviour with this strategy still needs measurement on device
 **D7. Local exclusive monitor only.** Sufficient for a single vCPU. SMP needs a global
 monitor shared by CPUs and cleared by other agents' stores.
 
+**D8. Soft TLB, ASID-tagged, deliberately over-invalidating.** 512 direct-mapped 4K-granule
+entries (larger guest pages are cached per 4K sub-page) hold the translation plus precomputed
+EL0/EL1 read/write/execute permissions. Non-global entries carry the ASID, so the TTBR0 write
+Linux performs on every context switch does not flush. TLBI, TCR/MAIR/SCTLR writes flush
+everything; dropping entries early is always architecturally legal. A one-entry fetch cache
+keeps instruction fetch off the TLB; it is invalidated with the TLB and on TTBR writes.
+
+**D9. A second oracle for system behaviour: real QEMU system emulation.** Unicorn cannot run
+guest code with the MMU enabled in my setup, so MMU behaviour is checked by generating
+bare-metal probe programs (loads, stores, `LDTR/STTR`, `AT`, EL0/EL1 fetch, straddling
+accesses, descriptor rewrite + TLBI) over random page tables, running the *same image* on
+`qemu-system-aarch64 -M virt -cpu max` and on `bbn-run`, and comparing normalised transcripts
+(ESR bits QEMU/architecture leave implementation-defined, such as ISV/SAS/EA, are masked).
+QEMU-verified transcripts for 40 seeds are committed (`tests/mmu_golden`) so the check runs
+without QEMU. Where QEMU deviates from the ARM ARM (Device alignment), the architecture wins
+and a unit test pins the behaviour.
+
 ## Review of the Perplexity feasibility report
 
 Method: claims were checked against primary or authoritative sources where feasible
@@ -104,10 +122,11 @@ inside this session, and against the running code/tests where they concern behav
 
 ### Missing technical requirements
 
-- **PSCI / secondary-CPU bring-up** for SMP guests (an HVC/SMC conduit exists as a hook:
-  `Cpu::set_hypercall_handler`; the PSCI implementation does not).
+- **PSCI / secondary-CPU bring-up** for SMP guests. Phase 2 adds single-CPU PSCI (system
+  off/reset, version, features); CPU_ON for secondary CPUs needs SMP.
 - **Software TLB.** The report lists a TLB for correctness; it is also the dominant
-  interpreter performance structure. A page walk per access is a known bottleneck.
+  interpreter performance structure. A page walk per access is a known bottleneck. (Addressed
+  in Phase 2: D8.)
 - **Decoded-instruction / translation-block cache and I-cache coherence rules** (`IC`/`DC`
   currently no-op because memory is always coherent).
 - **Host W^X for the JIT.** Android does not allow arbitrary RWX mappings in all
@@ -137,11 +156,10 @@ re-checked before being relied on.
 
 ## Known gaps (honest status)
 
-- No MMU, TLB, generic timer, GIC, virtio, FP/SIMD, LSE atomics, UEFI, device tree, SMP.
-- No JIT. No Android app, JNI or NDK build has been produced or tested.
+- Done in Phase 2 so far: stage-1 MMU, soft TLB, AT/TLBI, minimal PSCI.
+- Still missing before a Linux kernel can be expected to boot: FP/Advanced SIMD, generic timer
+  and interrupt controller (GIC), device tree + `Image` boot protocol, virtio, SMP.
+- No JIT. No Android app, JNI or NDK build has been produced or tested (a Termux/Clang 21
+  build on an Android phone compiled and passed the Phase 1 tests).
 - No Linux or BSD guest has been booted. Nothing in this repository claims otherwise.
-- Without an MMU, memory accesses are identity-mapped and unaligned data accesses are
-  permitted (real hardware treats MMU-off data accesses as Device memory and faults on
-  unaligned ones). This is intentional for bare-metal tests and will be replaced by proper
-  memory-type handling with the MMU.
 - Deviations from the architecture are documented in `docs/CPU_STATUS.md`.

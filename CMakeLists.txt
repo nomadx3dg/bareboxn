@@ -17,10 +17,12 @@ add_library(bbn_core STATIC
   src/devices/pl011.cpp
   src/cpu/cpu.cpp
   src/cpu/sysregs.cpp
+  src/cpu/mmu.cpp
   src/cpu/exec_branch.cpp
   src/cpu/exec_dp.cpp
   src/cpu/exec_ldst.cpp
   src/machine/virt.cpp
+  src/machine/psci.cpp
 )
 target_include_directories(bbn_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(bbn_core PRIVATE -Wall -Wextra -Wshadow -Wconversion-null)
@@ -37,10 +39,20 @@ endif()
 
 if(BBN_BUILD_TESTS)
   enable_testing()
-  foreach(t bus pl011 cpu_vectors cpu_system machine)
+  foreach(t bus pl011 cpu_vectors cpu_system mmu psci machine)
     add_executable(test_${t} tests/test_${t}.cpp)
     target_link_libraries(test_${t} PRIVATE bbn_core)
     target_include_directories(test_${t} PRIVATE tests)
     add_test(NAME ${t} COMMAND test_${t})
   endforeach()
+
+  # Replays recorded QEMU-verified MMU scenarios (needs python3 + keystone-engine; skipped otherwise).
+  if(BBN_BUILD_TOOLS)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_FOUND)
+      add_test(NAME mmu_golden
+               COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/mmu/mmu_golden.py ${CMAKE_BINARY_DIR})
+      set_tests_properties(mmu_golden PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    endif()
+  endif()
 endif()

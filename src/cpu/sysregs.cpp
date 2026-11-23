@@ -68,26 +68,23 @@ constexpr uint64_t kMidr = 0x000FBB00;  // implementer 0 (software), architectur
 constexpr uint64_t kPfr0 = (0x1ull << 0) | (0x1ull << 4) | (0xFull << 16) | (0xFull << 20);
 // ID_AA64DFR0_EL1: ARMv8.0 debug architecture (6), 2 breakpoints, 2 watchpoints, no PMU.
 constexpr uint64_t kDfr0 = 0x6 | (1ull << 12) | (1ull << 20);
-// ID_AA64MMFR0_EL1: PARange = 40 bits. Translation-granule fields are left at 0; the MMU
-// itself is not implemented yet, so nothing may be inferred from them.
-constexpr uint64_t kMmfr0 = 0x2;
+// ID_AA64MMFR0_EL1: PARange = 40 bits, 16-bit ASIDs, 4K and 64K granules (field 0 = supported)
+// and 16K granule (field 1 = supported). Big-endian and mixed-endian are not implemented.
+constexpr uint64_t kMmfr0 = 0x2 | (0x2 << 4) | (0x1ull << 20);
 // CTR_EL0: 64-byte cache lines, PIPT instruction caches, CWG/ERG 64 bytes.
 constexpr uint64_t kCtr = 0x84448004;
 constexpr uint64_t kDczid = 0x10;  // DZP=1: DC ZVA prohibited
 
-constexpr uint64_t SCTLR_M = 1ull << 0, SCTLR_E0E = 1ull << 24, SCTLR_EE = 1ull << 25,
-                   SCTLR_UMA = 1ull << 9;
+constexpr uint64_t SCTLR_E0E = 1ull << 24, SCTLR_EE = 1ull << 25, SCTLR_UMA = 1ull << 9;
 
 }  // namespace
 
 void Cpu::write_sctlr(uint64_t v) {
-  const uint64_t unsupported = v & (SCTLR_M | SCTLR_EE | SCTLR_E0E);
-  // Do not retain bits whose behaviour we cannot honour, so guest-visible state stays consistent.
-  s_.sctlr_el1 = v & ~(SCTLR_M | SCTLR_EE | SCTLR_E0E);
-  if (unsupported & SCTLR_M)
-    request_stop(StopReason::Unsupported,
-                 "guest enabled the MMU (SCTLR_EL1.M=1): stage-1 translation is not implemented");
-  else if (unsupported)
+  const uint64_t be = v & (SCTLR_EE | SCTLR_E0E);
+  // Big-endian data accesses are not implemented: do not retain the bits, report to the host.
+  s_.sctlr_el1 = v & ~(SCTLR_EE | SCTLR_E0E);
+  flush_tlb();  // M, WXN and friends change how every cached translation must be interpreted
+  if (be)
     request_stop(StopReason::Unsupported,
                  "guest requested big-endian data accesses (SCTLR_EL1.EE/E0E): not implemented");
 }
@@ -145,7 +142,7 @@ bool Cpu::read_sysreg(uint32_t key, uint64_t& out) {
     case CURRENTEL: out = uint64_t{s_.el} << 2; return true;
     case AMAIR_EL1: out = 0; return true;
     case MIDR_EL1: out = kMidr; return true;
-    case MPIDR_EL1: out = 0x80000000ull | cfg_.cpu_id; return true;  // bit 31 RES1
+    case MPIDR_EL1: out = mpidr(); return true;
     case REVIDR_EL1: case CCSIDR_EL1: case CLIDR_EL1: case AIDR_EL1: out = 0; return true;
     case ID_AA64PFR0_EL1: out = kPfr0; return true;
     case ID_AA64DFR0_EL1: out = kDfr0; return true;
@@ -181,6 +178,10 @@ bool Cpu::write_sysreg(uint32_t key, uint64_t value) {
   for (const StoreReg& r : kStore) {
     if (r.key == key) {
       s_.*(r.field) = value;
+      // Table base / ASID changes retarget instruction fetch; TCR/MAIR reinterpret all cached
+      // translations. (TLB entries are ASID-tagged, so TTBR writes need not flush them.)
+      if (key == K(3, 0, 2, 0, 0) || key == K(3, 0, 2, 0, 1)) fc_valid_ = false;
+      else if (key == K(3, 0, 2, 0, 2) || key == K(3, 0, 10, 2, 0)) flush_tlb();
       return true;
     }
   }

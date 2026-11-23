@@ -3,13 +3,16 @@
 // Scope of this implementation (see docs/CPU_STATUS.md for the full matrix):
 //   * EL0 and EL1 only; no EL2/EL3, no AArch32.
 //   * Integer base instruction set, exclusives, barriers, system registers.
-//   * No MMU (guest enabling SCTLR_EL1.M stops execution with Unsupported),
-//     no FP/Advanced SIMD (encodings are UNDEFINED, ID_AA64PFR0_EL1 says so).
+//   * Stage-1 MMU (4K/16K/64K granules, TTBR0/TTBR1, ASIDs, TBI, hierarchical
+//     permissions, access-flag faults) with a software TLB; no stage 2, no
+//     hardware AF/dirty updates, no PAN.
+//   * No FP/Advanced SIMD (encodings are UNDEFINED, ID_AA64PFR0_EL1 says so).
 //
 // The interpreter is the reference semantics for a future JIT: every
 // instruction is decoded and executed through explicit architectural state.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -23,6 +26,8 @@ enum class StopReason : uint8_t {
   InsnLimit,    // run() reached its instruction budget
   Halt,         // HLT executed (harness stop; see CpuConfig::hlt_is_stop)
   Wfi,          // WFI with no interrupt pending: the scheduler should wait for an event
+  PowerOff,     // guest requested power off (PSCI SYSTEM_OFF)
+  Reset,        // guest requested a system reset (PSCI SYSTEM_RESET)
   Unsupported,  // guest used a feature this CPU model does not implement; see stop_message()
 };
 
@@ -73,6 +78,7 @@ class Cpu {
   uint64_t instructions_retired() const { return icount_; }
   const std::string& stop_message() const { return stop_msg_; }
   uint32_t halt_imm() const { return halt_imm_; }
+  uint64_t mpidr() const { return 0x80000000ull | cfg_.cpu_id; }  // value read by MRS MPIDR_EL1
 
   void set_irq(bool level) { irq_ = level; }
   void set_fiq(bool level) { fiq_ = level; }
@@ -82,6 +88,11 @@ class Cpu {
   // keeps execution fully deterministic.
   void set_counter_source(std::function<uint64_t()> f) { counter_src_ = std::move(f); }
   uint64_t counter() const { return counter_src_ ? counter_src_() : icount_; }
+
+  // Host-side control: stop run() at the end of the current instruction.
+  void request_stop(StopReason r, const std::string& msg = {});
+  // Drop every cached translation (as TLBI VMALLE1 does).
+  void flush_tlb();
 
  private:
   // --- pending synchronous exception raised by the instruction being executed ---
@@ -112,9 +123,45 @@ class Cpu {
   void enter_el1(ExcKind kind, uint64_t elr, uint32_t esr);
   uint64_t pack_spsr() const;
   void do_eret();
-  void request_stop(StopReason r, const std::string& msg = {});
 
-  // --- memory (no MMU yet: virtual == physical) ---
+  // --- address translation (mmu.cpp) ---
+  enum class Access : uint8_t { Read, Write, Exec };
+  struct Trans {
+    bool ok = false;
+    uint64_t pa = 0;
+    uint8_t fsc = 0;      // DFSC/IFSC when !ok
+    bool ext = false;     // external abort (EA) on a table walk
+    bool device = false;  // Device memory type (unaligned accesses fault)
+    uint8_t attr = 0;     // MAIR attribute byte
+    uint8_t sh = 0;
+  };
+  struct TlbEntry {
+    uint64_t vpn = ~uint64_t{0};  // canonical VA >> 12; all-ones = invalid
+    uint64_t pa_page = 0;
+    uint16_t asid = 0;
+    bool global = false;
+    uint8_t perm = 0;             // bit0 r0, 1 w0, 2 x0, 3 r1, 4 w1, 5 x1
+    uint8_t level = 0;
+    bool device = false;
+    uint8_t attr = 0;
+    uint8_t sh = 0;
+  };
+  static constexpr size_t kTlbSize = 512;
+  struct MemLoc {
+    uint64_t pa0 = 0, pa1 = 0;
+    unsigned n1 = 0;  // bytes in the first page when the access straddles two pages
+    bool split = false;
+  };
+  bool mmu_enabled() const { return s_.sctlr_el1 & 1; }
+  uint64_t branch_addr(uint64_t target) const;  // AArch64.BranchAddr: drop the TBI tag from a PC
+  uint16_t current_asid() const;
+  Trans translate_core(uint64_t va, Access acc, bool el0);
+  Trans walk(uint64_t cv, bool upper, Access acc, bool el0, TlbEntry& slot);
+  bool resolve(uint64_t va, unsigned size, Access acc, bool force_align, MemLoc& loc);
+  bool fetch_pa(uint64_t va, uint64_t& pa);
+  void exec_at(unsigned op1, unsigned crm, unsigned op2, uint64_t va);
+
+  // --- memory access through the MMU ---
   bool mem_read(uint64_t va, unsigned size, uint64_t& v, bool require_aligned = false);
   bool mem_write(uint64_t va, unsigned size, uint64_t v, bool require_aligned = false);
 
@@ -162,6 +209,13 @@ class Cpu {
     uint64_t addr = 0;
     unsigned size = 0;
   } mon_;
+
+  std::array<TlbEntry, kTlbSize> tlb_;
+  bool unpriv_ = false;  // LDTR/STTR: access checked with EL0 permissions
+  // One-entry instruction-fetch translation cache (invalidated with the TLB and on TTBR writes).
+  bool fc_valid_ = false;
+  uint64_t fc_page_ = 0, fc_pa_ = 0;
+  uint8_t fc_el_ = 0;
 
   HypercallHandler hvc_;
   TraceHook trace_;

@@ -44,9 +44,9 @@ void Cpu::exec_branch_sys(uint32_t i) {
     const unsigned opc = bits(i, 24, 21), rn = bits(i, 9, 5);
     if (bits(i, 20, 16) != 0x1F || bits(i, 15, 10) != 0 || bits(i, 4, 0) != 0) return undef();
     switch (opc) {
-      case 0: next_pc_ = rd(rn); return;                                  // BR
-      case 1: { const uint64_t t = rd(rn); wr(30, cur_pc_ + 4); next_pc_ = t; return; }  // BLR
-      case 2: next_pc_ = rd(rn); return;                                  // RET
+      case 0: next_pc_ = branch_addr(rd(rn)); return;                     // BR
+      case 1: { const uint64_t t = branch_addr(rd(rn)); wr(30, cur_pc_ + 4); next_pc_ = t; return; }  // BLR
+      case 2: next_pc_ = branch_addr(rd(rn)); return;                     // RET
       case 4:                                                             // ERET
         if (rn != 31 || s_.el == 0) return undef();
         return do_eret();
@@ -124,10 +124,17 @@ void Cpu::exec_system(uint32_t i) {
   if (op0 == 1) {  // SYS / SYSL: cache and TLB maintenance
     if (l) return undef();
     if (s_.el == 0 && !(op1 == 3 && crn == 7)) return undef();
-    if (crn == 8) return;  // TLBI: no TLB yet
+    if (crn == 8) {  // TLBI (EL1 forms): VMALLE1, VAE1, ASIDE1, VAAE1, VALE1, VAALE1; IS/non-IS
+      if (op1 == 0 && (crm == 3 || crm == 7) && (op2 <= 3 || op2 == 5 || op2 == 7)) {
+        flush_tlb();  // over-invalidating is always architecturally permitted
+        return;
+      }
+      return undef();
+    }
     if (crn == 7) {
       if (op1 == 3 && crm == 4 && op2 == 1) return undef();  // DC ZVA (DCZID_EL0.DZP = 1)
-      if (crm == 8 || crm == 9) return undef();              // AT: needs the MMU
+      if (crm == 8) return exec_at(op1, crm, op2, rd(rt));   // AT S1E1R/S1E1W/S1E0R/S1E0W
+      if (crm == 9) return undef();                          // AT S1E1RP/WP (FEAT_PAN2)
       return;                                                // IC/DC: memory is always coherent
     }
     return undef();

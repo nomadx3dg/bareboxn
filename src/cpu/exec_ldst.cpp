@@ -33,7 +33,7 @@ void Cpu::exec_ldst_reg(uint32_t i) {
     switch (bits(i, 11, 10)) {
       case 0: addr = base + static_cast<uint64_t>(imm9); is_unscaled = true; break;  // LDUR/STUR
       case 1: addr = base; writeback = true; wb_val = base + static_cast<uint64_t>(imm9); break;
-      case 2: addr = base + static_cast<uint64_t>(imm9); break;  // LDTR/STTR (no privilege model yet)
+      case 2: addr = base + static_cast<uint64_t>(imm9); unpriv_ = true; break;  // LDTR/STTR
       default: addr = base + static_cast<uint64_t>(imm9); writeback = true; wb_val = addr; break;
     }
   } else {

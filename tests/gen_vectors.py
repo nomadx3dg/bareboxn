@@ -200,7 +200,7 @@ B += [
     basic("ldrsh_w", "ldrsh w0, [x1]", {"x1": DATA, "x0": M64}, {"x0": 0xFFFFFF80}, mem_init={DATA: SIGN}),
     basic("ldrsh_x", "ldrsh x0, [x1]", {"x1": DATA}, {"x0": M64 ^ 0x7F}, mem_init={DATA: SIGN}),
     basic("ldrsw", "ldrsw x0, [x1, #4]", {"x1": DATA}, {"x0": 0xFFFFFFFF80000000}, mem_init={DATA: SIGN}),
-    basic("ldpsw", "ldpsw x0, x1, [x2]", {"x2": DATA}, {"x0": 0xFFFFFFFFFFFF7FFF ^ 0x0000000000007F7F ^ 0x0000000000000000 if False else 0xFFFFFFFF007FFF80, "x1": 0xFFFFFFFF80000000}, mem_init={DATA: SIGN}),
+    basic("ldpsw", "ldpsw x0, x1, [x2]", {"x2": DATA}, {"x0": 0x007FFF80, "x1": 0xFFFFFFFF80000000}, mem_init={DATA: SIGN}),
     basic("ldrsw_literal", "ldrsw x0, #0x10004", {}, {"x0": 0xFFFFFFFF80000000}, mem_init={DATA: SIGN}),
     basic("str64", "str x0, [x1, #8]", {"x0": 0x1122334455667788, "x1": DATA}, {},
           mem_init={DATA: bytes(16)}, mem_expect={DATA + 8: le(0x1122334455667788, 8)}),
@@ -228,10 +228,6 @@ B += [
     LD("ldxp_stxp", "ldxp x0, x1, [x2]\nstxp w3, x4, x5, [x2]", {"x2": DATA, "x4": 0xAA, "x5": 0xBB},
        {"x0": 0x0807060504030201, "x1": 0x100F0E0D0C0B0A09, "x3": 0}, mem_expect={DATA: le(0xAA, 8) + le(0xBB, 8)}),
 ]
-# fix the ldpsw expectation (bytes 80 FF 7F 00 | 00 00 00 80): w0=0x007FFF80 (positive), w1=0x80000000 -> sign-extended
-for v in B:
-    if v.name == "ldpsw":
-        v.expect = {"x0": 0x007FFF80, "x1": 0xFFFFFFFF80000000}
 
 # ---------------------------------------------------------------- system vectors
 S = []
@@ -300,7 +296,7 @@ S += [
     Vec("spsel_banking", {CODE: "mov x1, #0x2000\nmov sp, x1\nmsr spsel, #0\nmov x1, #0x3000\nmov sp, x1\nmrs x2, sp_el0\nmsr spsel, #1\nmov x3, sp\nmrs x4, spsel\nhlt #0"},
         {}, {"x2": 0x3000, "x3": 0x2000, "x4": 1}),
     Vec("exception_from_el1t_uses_offset_0", {CODE: prog_vbar("msr spsel, #0\nsvc #0\nhlt #0"),
-                                              VBAR + 0x000: "mrs x1, spsr_el1\nhlt #1"}, {}, {"x1": DAIF_ALL | 4 ^ 0 if False else (0xF << 6) | 0}),
+                                              VBAR + 0x000: "mrs x1, spsr_el1\nhlt #1"}, {}, {"x1": DAIF_ALL | 4}),   # SPSR: EL1t, DAIF all masked
     Vec("daif_set_clear", {CODE: "msr daifclr, #0xf\nmrs x0, daif\nmsr daifset, #2\nmrs x1, daif\nmsr daifset, #0xf\nmrs x2, daif\nmsr daifclr, #4\nmrs x3, daif"},
         {}, {"x0": 0, "x1": 0x80, "x2": 0x3C0, "x3": 0x3C0 & ~(1 << 8)}),
     Vec("eret_illegal_return_el2", {CODE: prog_vbar("mov x1, #9\nmsr spsr_el1, x1\nmsr elr_el1, x1\neret"),
@@ -316,19 +312,16 @@ S += [
                                                VBAR + 0x200: "mrs x2, esr_el1\nhlt #1"}, {}, {"x2": ESR(0)}),
     Vec("unimplemented_timer_reg_is_undefined", {CODE: prog_vbar("mrs x0, cntv_ctl_el0\nhlt #0"),
                                                   VBAR + 0x200: "mrs x2, esr_el1\nhlt #1"}, {}, {"x2": ESR(0)}),
-    Vec("hvc_without_el2_is_undefined", {CODE: prog_vbar("hvc #0\nhlt #0"),
-                                         VBAR + 0x200: "mrs x2, esr_el1\nhlt #1"}, {}, {"x2": ESR(0)}),
     Vec("cache_and_tlb_maintenance_are_nops", {CODE: "dc civac, x0\nic iallu\ndsb sy\nisb\ndmb ish\ntlbi vmalle1\nnop\nyield\nsev\nmov x1, #5"}, {}, {"x1": 5}),
     Vec("dc_zva_undefined", {CODE: prog_vbar("dc zva, x0\nhlt #0"), VBAR + 0x200: "mrs x2, esr_el1\nhlt #1"}, {}, {"x2": ESR(0)}),
     Vec("counter_is_monotonic", {CODE: "mrs x0, cntvct_el0\nnop\nnop\nmrs x1, cntvct_el0\nsub x2, x1, x0"}, {}, {"x2": 3}),
-    Vec("mmu_enable_is_reported_unsupported", {CODE: "mov x0, #1\nmsr sctlr_el1, x0\nmov x1, #2"}, {}, {"x1": 0}, stop="Unsupported"),
+    Vec("big_endian_request_is_reported_unsupported", {CODE: "movz x0, #0x200, lsl #16\nmsr sctlr_el1, x0\nmov x1, #2"}, {}, {"x1": 0}, stop="Unsupported"),
+    Vec("hvc_with_non_psci_function_id_is_undefined", {CODE: prog_vbar("hvc #0\nhlt #0"),
+                                         VBAR + 0x200: "mrs x2, esr_el1\nhlt #1"}, {}, {"x2": ESR(0)}),
+    Vec("psci_version_and_system_off", {CODE: "movz x0, #0x8400, lsl #16\nhvc #0\nmov x5, x0\nmovz x0, #0x8400, lsl #16\nmovk x0, #8\nhvc #0\nmov x6, #1\nhlt #0"},
+        {}, {"x5": 0x10000, "x6": 0}, stop="PowerOff"),
+    Vec("id_aa64mmfr0_advertises_mmu", {CODE: "mrs x0, id_aa64mmfr0_el1"}, {}, {"x0": 0x100022}),
 ]
-# fix one expectation that was written awkwardly above: SPSR from EL1t is EL1t(4)|DAIF all masked
-for v in S:
-    if v.name == "exception_from_el1t_uses_offset_0":
-        v.expect = {"x1": DAIF_ALL | 4}
-    if v.name == "mmu_enable_is_reported_unsupported":
-        v.expect = {"x1": 0}  # stop is reported after msr retires; the following mov never runs
 
 
 def cpp_bytes(b):

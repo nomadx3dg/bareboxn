@@ -85,13 +85,22 @@ BBN_TEST(hlt_is_undefined_when_not_configured_as_stop) {
   CHECK_EQ(r.cpu().state().esr_el1 >> 26, 0ull);
 }
 
-BBN_TEST(mmu_enable_keeps_guest_state_consistent) {
+BBN_TEST(big_endian_request_is_reported_and_not_retained_but_mmu_enable_is) {
   Rig r;
-  r.load(kCode, {0xD2800020 /*mov x0,#1*/, 0xD5181000 /*msr sctlr_el1,x0*/, 0xD5381001 /*mrs x1,sctlr_el1*/, HLT0});
+  r.load(kCode, {0xD2A04000 /*movz x0,#0x200,lsl #16 (EE)*/, 0xD5181000 /*msr sctlr_el1,x0*/, 0xD5381001 /*mrs x1,sctlr_el1*/, HLT0});
   r.cpu().reset(kCode);
   CHECK(r.cpu().run(10) == bbn::StopReason::Unsupported);
-  CHECK(r.cpu().stop_message().find("MMU") != std::string::npos);
-  CHECK_EQ(r.cpu().state().sctlr_el1 & 1, 0ull);   // M bit is not retained
+  CHECK(r.cpu().stop_message().find("big-endian") != std::string::npos);
+  CHECK_EQ(r.cpu().state().sctlr_el1 & (1ull << 25), 0ull);   // EE is not retained
+
+  // Enabling the MMU is supported now: M is retained and execution continues (identity-mapped
+  // by an empty-table fault would be fatal, so only check the register, not execution).
+  Rig r2;
+  r2.cpu().reset(kCode);
+  r2.cpu().state().x[0] = 0x30D00801;
+  r2.load(kCode, {0xD5181000 /*msr sctlr_el1,x0*/});
+  r2.cpu().step();
+  CHECK_EQ(r2.cpu().state().sctlr_el1 & 1, 1ull);
 }
 
 BBN_TEST(counter_source_and_frequency_are_configurable) {

@@ -24,6 +24,7 @@ void Cpu::reset(uint64_t entry_pc) {
   s_.pc = entry_pc;
   mon_ = {};
   pend_ = {};
+  flush_tlb();
   stop_ = StopReason::None;
   stop_msg_.clear();
 }
@@ -126,7 +127,7 @@ void Cpu::do_eret() {
     return;
   }
   set_pstate_from_spsr_bits(spsr);
-  next_pc_ = s_.elr_el1;
+  next_pc_ = branch_addr(s_.elr_el1);  // uses the *new* translation regime's TBI setting
   mon_.valid = false;
 }
 
@@ -146,13 +147,17 @@ StopReason Cpu::step() {
 
   cur_pc_ = s_.pc;
   pend_ = Pending{};
+  unpriv_ = false;
   if (cur_pc_ & 3) {
     raise(EC_PC_ALIGN, 0);
     pend_.far = cur_pc_;
     pend_.far_valid = true;
   } else {
     uint32_t insn = 0;
-    if (!bus_.fetch32(cur_pc_, insn)) {
+    uint64_t fetch_addr = cur_pc_;
+    if ((s_.sctlr_el1 & 1) && !fetch_pa(cur_pc_, fetch_addr)) {
+      // translation/permission fault already recorded in pend_
+    } else if (!bus_.fetch32(fetch_addr, insn)) {
       raise_inst_abort(cur_pc_, 0x10, true);
     } else {
       if (trace_) trace_(cur_pc_, insn);
@@ -193,29 +198,64 @@ void Cpu::exec(uint32_t insn) {
 }
 
 // ---------------------------------------------------------------------------
-// Memory access (identity-mapped until the MMU lands)
+// Memory access through the MMU
 // ---------------------------------------------------------------------------
 
 bool Cpu::mem_read(uint64_t va, unsigned size, uint64_t& v, bool require_aligned) {
-  if (require_aligned && (va & (size - 1))) {
-    raise_data_abort(va, false, 0x21, false);
-    return false;
+  // Fast path: MMU off and no alignment checking (SCTLR_EL1.M == A == 0): physical == virtual.
+  if (!(s_.sctlr_el1 & 3) && !require_aligned) {
+    if (bus_.read(va, size, v) != BusResult::Ok) {
+      raise_data_abort(va, false, 0x10, true);
+      return false;
+    }
+    return true;
   }
-  if (bus_.read(va, size, v) != BusResult::Ok) {
-    raise_data_abort(va, false, 0x10, true);
-    return false;
+  MemLoc loc;
+  if (!resolve(va, size, Access::Read, require_aligned, loc)) return false;
+  if (!loc.split) {
+    if (bus_.read(loc.pa0, size, v) != BusResult::Ok) {
+      raise_data_abort(va, false, 0x10, true);
+      return false;
+    }
+    return true;
   }
+  uint64_t out = 0;
+  for (unsigned i = 0; i < size; ++i) {
+    const uint64_t pa = i < loc.n1 ? loc.pa0 + i : loc.pa1 + (i - loc.n1);
+    uint64_t b = 0;
+    if (bus_.read(pa, 1, b) != BusResult::Ok) {
+      raise_data_abort(va, false, 0x10, true);
+      return false;
+    }
+    out |= b << (8 * i);
+  }
+  v = out;
   return true;
 }
 
 bool Cpu::mem_write(uint64_t va, unsigned size, uint64_t v, bool require_aligned) {
-  if (require_aligned && (va & (size - 1))) {
-    raise_data_abort(va, true, 0x21, false);
-    return false;
+  if (!(s_.sctlr_el1 & 3) && !require_aligned) {
+    if (bus_.write(va, size, v) != BusResult::Ok) {
+      raise_data_abort(va, true, 0x10, true);
+      return false;
+    }
+    return true;
   }
-  if (bus_.write(va, size, v) != BusResult::Ok) {
-    raise_data_abort(va, true, 0x10, true);
-    return false;
+  MemLoc loc;
+  if (!resolve(va, size, Access::Write, require_aligned, loc)) return false;
+  if (!loc.split) {
+    if (bus_.write(loc.pa0, size, v) != BusResult::Ok) {
+      raise_data_abort(va, true, 0x10, true);
+      return false;
+    }
+    return true;
+  }
+  for (unsigned i = 0; i < size; ++i) {
+    const uint64_t pa = i < loc.n1 ? loc.pa0 + i : loc.pa1 + (i - loc.n1);
+    if (bus_.write(pa, 1, (v >> (8 * i)) & 0xFF) != BusResult::Ok) {
+      raise_data_abort(va, true, 0x10, true);
+      return false;
+    }
   }
   return true;
 }

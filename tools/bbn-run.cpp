@@ -16,7 +16,7 @@ void usage() {
                "  --ram <MiB>         guest RAM size (default 128)\n"
                "  --max-insns <n>     instruction budget (default 100000000)\n"
                "  --regs              dump registers on exit\n"
-               "exit status: 0 on HLT, 2 on instruction limit/WFI, 3 on unsupported feature, 1 on error\n");
+               "exit status: 0 on HLT/PSCI power off, 2 on instruction limit/WFI, 3 on unsupported feature,\n               4 on PSCI reset, 1 on error\n");
 }
 }  // namespace
 
@@ -52,7 +52,8 @@ int main(int argc, char** argv) {
   std::fflush(stdout);
   int rc = 1;
   switch (r) {
-    case bbn::StopReason::Halt: rc = 0; break;
+    case bbn::StopReason::Halt: case bbn::StopReason::PowerOff: rc = 0; break;
+    case bbn::StopReason::Reset: std::fprintf(stderr, "bbn-run: guest requested reset\n"); rc = 4; break;
     case bbn::StopReason::InsnLimit:
       std::fprintf(stderr, "bbn-run: instruction limit reached at pc=0x%llx\n", (unsigned long long)m.cpu().state().pc);
       rc = 2; break;
@@ -70,6 +71,9 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "\npc=%016llx sp=%016llx el=%u nzcv=%c%c%c%c insns=%llu\n", (unsigned long long)s.pc,
                  (unsigned long long)m.cpu().sp(), s.el, s.n ? 'N' : '-', s.z ? 'Z' : '-', s.c ? 'C' : '-', s.v ? 'V' : '-',
                  (unsigned long long)m.cpu().instructions_retired());
+    std::fprintf(stderr, "esr_el1=%016llx far_el1=%016llx elr_el1=%016llx spsr_el1=%016llx sctlr_el1=%016llx\n",
+                 (unsigned long long)s.esr_el1, (unsigned long long)s.far_el1, (unsigned long long)s.elr_el1,
+                 (unsigned long long)s.spsr_el1, (unsigned long long)s.sctlr_el1);
   }
   return rc;
 }

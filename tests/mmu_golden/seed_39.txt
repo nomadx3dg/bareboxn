@@ -1,0 +1,30 @@
+E iabt ec=21 fsc=07 far=76dfc040
+E dabt ec=25 fsc=07 wnr=0 far=76dfc008
+E dabt ec=25 fsc=07 wnr=0 far=600000076e03ffc
+E dabt ec=25 fsc=07 wnr=0 far=600000076e03ffc
+P fault fst=07
+E iabt ec=20 fsc=06 far=e30c040
+E iabt ec=21 fsc=06 far=e30c040
+E iabt ec=21 fsc=0f far=6c40040
+P ok pa=40370000 attr=00
+E iabt ec=20 fsc=0f far=6c40040
+V a70933701a664863
+E iabt ec=21 fsc=0e far=4e304040
+V 1a376125d62def19
+E dabt ec=25 fsc=06 wnr=0 far=520000004e30bff8
+E dabt ec=25 fsc=07 wnr=1 far=3c000000099c3ffd
+E dabt ec=25 fsc=07 wnr=0 far=3c000000099c3ffd
+E dabt ec=25 fsc=07 wnr=1 far=9e000000099c0003
+E dabt ec=25 fsc=07 wnr=0 far=9e000000099c0003
+E svc imm=0
+E svc imm=0
+V 60b0b5595f6d67fe
+P fault fst=07
+P fault fst=07
+E dabt ec=25 fsc=07 wnr=0 far=d00000003656c010
+V 0000000000002222
+E svc imm=0
+E dabt ec=25 fsc=06 wnr=0 far=e30c008
+E dabt ec=25 fsc=06 wnr=1 far=950000000e30ffff
+E dabt ec=25 fsc=06 wnr=0 far=950000000e30ffff
+E dabt ec=25 fsc=06 wnr=0 far=520000000e310010

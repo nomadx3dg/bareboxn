@@ -28,6 +28,7 @@ struct VirtConfig {
   uint64_t ram_size = 128ull << 20;
   Pl011::TxSink uart_sink;  // receives bytes the guest writes to the UART
   CpuConfig cpu;
+  bool enable_psci = true;  // service HVC/SMC PSCI calls (what the device tree conduit expects)
 };
 
 class VirtMachine {
